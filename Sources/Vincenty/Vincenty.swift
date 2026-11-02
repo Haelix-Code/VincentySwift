@@ -31,6 +31,8 @@ public struct InverseSolution: Sendable, Equatable {
     public let finalBearing: Double?
 }
 
+// Variable names follow Veness (and Vincenty's paper), so single letters and Greek are deliberate.
+// swiftlint:disable identifier_name
 public extension Ellipsoid {
     /// The point reached by travelling `distance` metres along a geodesic from `start`,
     /// setting off on `initialBearing` degrees from north.
@@ -61,7 +63,8 @@ public extension Ellipsoid {
             cos2σₘ = cos(2 * σ1 + σ)
             sinσ = sin(σ)
             cosσ = cos(σ)
-            let Δσ = B * sinσ * (cos2σₘ + B / 4 * (cosσ * (-1 + 2 * cos2σₘ * cos2σₘ) - B / 6 * cos2σₘ * (-3 + 4 * sinσ * sinσ) * (-3 + 4 * cos2σₘ * cos2σₘ)))
+            let Δσ = B * sinσ * (cos2σₘ + B / 4 * (cosσ * (-1 + 2 * cos2σₘ * cos2σₘ) -
+                B / 6 * cos2σₘ * (-3 + 4 * sinσ * sinσ) * (-3 + 4 * cos2σₘ * cos2σₘ)))
             let σʹ = σ
             σ = s / (b * A) + Δσ
             if abs(σ - σʹ) <= 1e-12 { break } // TV: 'iterate until negligible change in λ' (≈0.006mm)
@@ -98,7 +101,8 @@ public extension Ellipsoid {
         let antipodal = abs(L) > .pi / 2 || abs(φ2 - φ1) > .pi / 2
 
         var λ = L, sinλ = 0.0, cosλ = 0.0 // λ = difference in longitude on an auxiliary sphere
-        var σ = antipodal ? Double.pi : 0, sinσ = 0.0, cosσ = antipodal ? -1.0 : 1.0, sinSqσ = 0.0 // σ = angular distance P₁ P₂ on the sphere
+        // σ = angular distance P₁ P₂ on the sphere
+        var σ = antipodal ? Double.pi : 0, sinσ = 0.0, cosσ = antipodal ? -1.0 : 1.0, sinSqσ = 0.0
         var cos2σₘ = 1.0 // σₘ = angular distance on the sphere from the equator to the midpoint of the line
         var cosSqα = 1.0 // α = azimuth of the geodesic at the equator
 
@@ -127,7 +131,8 @@ public extension Ellipsoid {
         let uSq = cosSqα * (a * a - b * b) / (b * b)
         let A = 1 + uSq / 16384 * (4096 + uSq * (-768 + uSq * (320 - 175 * uSq)))
         let B = uSq / 1024 * (256 + uSq * (-128 + uSq * (74 - 47 * uSq)))
-        let Δσ = B * sinσ * (cos2σₘ + B / 4 * (cosσ * (-1 + 2 * cos2σₘ * cos2σₘ) - B / 6 * cos2σₘ * (-3 + 4 * sinσ * sinσ) * (-3 + 4 * cos2σₘ * cos2σₘ)))
+        let Δσ = B * sinσ * (cos2σₘ + B / 4 * (cosσ * (-1 + 2 * cos2σₘ * cos2σₘ) -
+            B / 6 * cos2σₘ * (-3 + 4 * sinσ * sinσ) * (-3 + 4 * cos2σₘ * cos2σₘ)))
 
         let s = b * A * (σ - Δσ) // s = length of the geodesic
 
@@ -146,6 +151,7 @@ public extension Ellipsoid {
         )
     }
 }
+// swiftlint:enable identifier_name
 
 private func radians(_ degrees: Double) -> Double { degrees * .pi / 180 }
 private func degrees(_ radians: Double) -> Double { radians * 180 / .pi }

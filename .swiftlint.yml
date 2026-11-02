@@ -1,0 +1,2 @@
+# Shared rules (excludes .build, allows short maths identifiers): https://github.com/Haelix-Code/swift-ci
+parent_config: https://raw.githubusercontent.com/Haelix-Code/swift-ci/v1/swiftlint/base.yml

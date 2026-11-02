@@ -36,6 +36,6 @@ func wrap360(_ degrees: Double) -> Double {
 }
 
 /// Floored modulo, so negative values wrap upwards (JavaScript's `%` is a remainder).
-private func modulo(_ x: Double, _ n: Double) -> Double {
-    (x.truncatingRemainder(dividingBy: n) + n).truncatingRemainder(dividingBy: n)
+private func modulo(_ dividend: Double, _ divisor: Double) -> Double {
+    (dividend.truncatingRemainder(dividingBy: divisor) + divisor).truncatingRemainder(dividingBy: divisor)
 }
