@@ -78,8 +78,148 @@ final class VincentyTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(solution.finalBearing) - 180, dms(127, 10, 25.07), accuracy: 0.005 / 3600)
     }
 
-    // MARK: - Rainsford (from Vincenty's 1975 paper)
+    // MARK: - Antipodal and convergence
 
+    /// WGS-84 meridional circumference, from Veness's tests.
+    private let meridionalCircumference = 40_007_862.918
+
+    func test_inverse_nearAntipodal_converges() throws {
+        let distance = try wgs84.inverse(
+            from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0.5, longitude: 179.5)
+        ).distance
+        XCTAssertEqual(distance, 19_936_288.579, accuracy: millimetre)
+    }
+
+    func test_inverse_antipodal_failsToConverge() {
+        let cases: [(GeodeticCoordinate, GeodeticCoordinate)] = [
+            (.init(latitude: 0, longitude: 0), .init(latitude: 0.5, longitude: 179.7)),   // λ > π
+            (.init(latitude: 5, longitude: 0), .init(latitude: -5.1, longitude: 179.4))   // iteration limit
+        ]
+        for (start, end) in cases {
+            XCTAssertThrowsError(try wgs84.inverse(from: start, to: end)) { error in
+                XCTAssertEqual(error as? VincentyError, .failedToConverge)
+            }
+        }
+    }
+
+    func test_inverse_exactlyAntipodal_isHalfMeridian() throws {
+        let equatorial = try wgs84.inverse(
+            from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0, longitude: 180)
+        )
+        XCTAssertEqual(equatorial.distance, meridionalCircumference / 2, accuracy: millimetre)
+        XCTAssertEqual(try XCTUnwrap(equatorial.initialBearing), 0, accuracy: bearingPrecision)
+
+        let meridional = try wgs84.inverse(
+            from: .init(latitude: 90, longitude: 0), to: .init(latitude: -90, longitude: 0)
+        )
+        XCTAssertEqual(meridional.distance, meridionalCircumference / 2, accuracy: millimetre)
+        XCTAssertEqual(try XCTUnwrap(meridional.initialBearing), 0, accuracy: bearingPrecision)
+    }
+
+    // MARK: - Small distances and coincident points
+
+    func test_inverse_smallDistances() throws {
+        let origin = GeodeticCoordinate(latitude: 0, longitude: 0)
+        let expected: [(Double, Double)] = [(1e-5, 1.569), (1e-6, 0.157), (1e-7, 0.016), (1e-8, 0.002), (1e-9, 0.000)]
+        for (offset, distance) in expected {
+            let solution = try wgs84.inverse(from: origin, to: .init(latitude: offset, longitude: offset))
+            XCTAssertEqual(solution.distance, distance, accuracy: millimetre, "\(offset)°")
+        }
+    }
+
+    func test_inverse_coincident_hasZeroDistanceAndNoBearing() throws {
+        let solution = try wgs84.inverse(from: landsEnd, to: landsEnd)
+
+        XCTAssertEqual(solution.distance, 0)
+        XCTAssertNil(solution.initialBearing)
+        XCTAssertNil(solution.finalBearing)
+    }
+
+    func test_inverse_oneDegreeOfEquator() throws {
+        let distance = try wgs84.inverse(
+            from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0, longitude: 1)
+        ).distance
+        XCTAssertEqual(distance, 111_319.491, accuracy: millimetre)
+    }
+
+    func test_direct_zeroDistance_returnsStart() throws {
+        let solution = try wgs84.direct(from: landsEnd, distance: 0, initialBearing: 0)
+
+        XCTAssertEqual(solution.destination, landsEnd)
+        XCTAssertNil(solution.finalBearing)
+    }
+
+    // MARK: - Antimeridian and quadrants
+
+    func test_inverse_crossingAntimeridian() throws {
+        let distance = try wgs84.inverse(
+            from: .init(latitude: 30, longitude: 120), to: .init(latitude: 30, longitude: -120)
+        ).distance
+        XCTAssertEqual(distance, 10_825_924.089, accuracy: millimetre)
+    }
+
+    func test_direct_crossingAntimeridian_wrapsLongitude() throws {
+        let start = GeodeticCoordinate(latitude: 30, longitude: 120)
+        let end = GeodeticCoordinate(latitude: 30, longitude: -120)
+        let inverse = try wgs84.inverse(from: start, to: end)
+
+        let direct = try wgs84.direct(
+            from: start, distance: inverse.distance, initialBearing: try XCTUnwrap(inverse.initialBearing)
+        )
+
+        assertCoordinate(direct.destination, end, accuracy: 0.000001)
+    }
+
+    func test_inverse_allQuadrants() throws {
+        let pairs: [((Double, Double), (Double, Double))] = [
+            ((30, 30), (60, 60)), ((60, 60), (30, 30)), ((30, 60), (60, 30)), ((60, 30), (30, 60)),
+            ((30, -30), (60, -60)), ((60, -60), (30, -30)), ((30, -60), (60, -30)), ((60, -30), (30, -60)),
+            ((-30, -30), (-60, -60)), ((-60, -60), (-30, -30)), ((-30, -60), (-60, -30)), ((-60, -30), (-30, -60)),
+            ((-30, 30), (-60, 60)), ((-60, 60), (-30, 30)), ((-30, 60), (-60, 30)), ((-60, 30), (-30, 60))
+        ]
+        for (start, end) in pairs {
+            let distance = try wgs84.inverse(
+                from: .init(latitude: start.0, longitude: start.1), to: .init(latitude: end.0, longitude: end.1)
+            ).distance
+            XCTAssertEqual(distance, 4_015_703.021, accuracy: millimetre, "\(start) → \(end)")
+        }
+    }
+
+    // MARK: - Round trips
+
+    func test_directThenInverse_roundTrips() throws {
+        let start = GeodeticCoordinate(latitude: 1, longitude: 1)
+        for (distance, bearing) in [(1.0, 0.0), (1_000.0, 45.0), (25_000.0, 186.0), (5_000_000.0, 300.0)] {
+            let direct = try wgs84.direct(from: start, distance: distance, initialBearing: bearing)
+            let inverse = try wgs84.inverse(from: start, to: direct.destination)
+
+            XCTAssertEqual(inverse.distance, distance, accuracy: millimetre, "\(distance) m at \(bearing)°")
+            XCTAssertEqual(
+                try XCTUnwrap(inverse.initialBearing), bearing, accuracy: bearingPrecision,
+                "\(distance) m at \(bearing)°"
+            )
+        }
+    }
+
+    // MARK: - Invalid input
+
+    func test_nonFiniteInput_throws() {
+        let nan = Double.nan
+        XCTAssertThrowsError(try wgs84.direct(from: landsEnd, distance: nan, initialBearing: 0)) {
+            XCTAssertEqual($0 as? VincentyError, .invalidInput)
+        }
+        XCTAssertThrowsError(try wgs84.direct(from: landsEnd, distance: 1, initialBearing: nan)) {
+            XCTAssertEqual($0 as? VincentyError, .invalidInput)
+        }
+        XCTAssertThrowsError(try wgs84.inverse(from: .init(latitude: nan, longitude: 0), to: landsEnd)) {
+            XCTAssertEqual($0 as? VincentyError, .invalidInput)
+        }
+    }
+}
+
+// MARK: - Rainsford (from Vincenty's 1975 paper)
+
+extension VincentyTests {
     private struct RainsfordCase {
         let name: String
         let ellipsoid: Ellipsoid
@@ -140,146 +280,43 @@ final class VincentyTests: XCTestCase {
                 directDestination: .init(latitude: dms(1, 1, 15.18955), longitude: dms(179, 46, 17.84244)),
                 inverseDistance: 19_780_006.559,
                 inverseInitialBearing: dms(5), inverseFinalBearing: dms(174, 59, 59.88480)
-            ),
+            )
         ]
     }
 
     func test_rainsford_direct() throws {
-        for c in rainsfordCases {
-            let solution = try c.ellipsoid.direct(from: c.start, distance: c.distance, initialBearing: c.initialBearing)
-            XCTAssertEqual(solution.destination.latitude, c.directDestination.latitude, accuracy: dmsPrecision, "Rainsford \(c.name) latitude")
-            XCTAssertEqual(solution.destination.longitude, c.directDestination.longitude, accuracy: dmsPrecision, "Rainsford \(c.name) longitude")
+        for testCase in rainsfordCases {
+            let solution = try testCase.ellipsoid.direct(
+                from: testCase.start, distance: testCase.distance, initialBearing: testCase.initialBearing
+            )
+            let expected = testCase.directDestination
+            XCTAssertEqual(
+                solution.destination.latitude, expected.latitude, accuracy: dmsPrecision,
+                "Rainsford \(testCase.name) latitude"
+            )
+            XCTAssertEqual(
+                solution.destination.longitude, expected.longitude, accuracy: dmsPrecision,
+                "Rainsford \(testCase.name) longitude"
+            )
         }
     }
 
     func test_rainsford_inverse() throws {
-        for c in rainsfordCases {
-            let solution = try c.ellipsoid.inverse(from: c.start, to: c.end)
-            XCTAssertEqual(solution.distance, c.inverseDistance, accuracy: millimetre, "Rainsford \(c.name) distance")
+        for testCase in rainsfordCases {
+            let solution = try testCase.ellipsoid.inverse(from: testCase.start, to: testCase.end)
+            XCTAssertEqual(
+                solution.distance, testCase.inverseDistance, accuracy: millimetre,
+                "Rainsford \(testCase.name) distance"
+            )
             // Veness rounds inverse bearings to 7 decimal places of a degree before converting to DMS
-            XCTAssertEqual(try XCTUnwrap(solution.initialBearing), c.inverseInitialBearing, accuracy: bearingPrecision, "Rainsford \(c.name) initial bearing")
-            XCTAssertEqual(try XCTUnwrap(solution.finalBearing), c.inverseFinalBearing, accuracy: bearingPrecision, "Rainsford \(c.name) final bearing")
-        }
-    }
-
-    // MARK: - Antipodal and convergence
-
-    /// WGS-84 meridional circumference, from Veness's tests.
-    private let meridionalCircumference = 40_007_862.918
-
-    func test_inverse_nearAntipodal_converges() throws {
-        let distance = try wgs84.inverse(from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0.5, longitude: 179.5)).distance
-        XCTAssertEqual(distance, 19_936_288.579, accuracy: millimetre)
-    }
-
-    func test_inverse_antipodal_failsToConverge() {
-        let cases: [(GeodeticCoordinate, GeodeticCoordinate)] = [
-            (.init(latitude: 0, longitude: 0), .init(latitude: 0.5, longitude: 179.7)),   // λ > π
-            (.init(latitude: 5, longitude: 0), .init(latitude: -5.1, longitude: 179.4)),  // iteration limit
-        ]
-        for (start, end) in cases {
-            XCTAssertThrowsError(try wgs84.inverse(from: start, to: end)) { error in
-                XCTAssertEqual(error as? VincentyError, .failedToConverge)
-            }
-        }
-    }
-
-    func test_inverse_exactlyAntipodal_isHalfMeridian() throws {
-        let equatorial = try wgs84.inverse(from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0, longitude: 180))
-        XCTAssertEqual(equatorial.distance, meridionalCircumference / 2, accuracy: millimetre)
-        XCTAssertEqual(try XCTUnwrap(equatorial.initialBearing), 0, accuracy: bearingPrecision)
-
-        let meridional = try wgs84.inverse(from: .init(latitude: 90, longitude: 0), to: .init(latitude: -90, longitude: 0))
-        XCTAssertEqual(meridional.distance, meridionalCircumference / 2, accuracy: millimetre)
-        XCTAssertEqual(try XCTUnwrap(meridional.initialBearing), 0, accuracy: bearingPrecision)
-    }
-
-    // MARK: - Small distances and coincident points
-
-    func test_inverse_smallDistances() throws {
-        let origin = GeodeticCoordinate(latitude: 0, longitude: 0)
-        let expected: [(Double, Double)] = [(1e-5, 1.569), (1e-6, 0.157), (1e-7, 0.016), (1e-8, 0.002), (1e-9, 0.000)]
-        for (offset, distance) in expected {
-            let solution = try wgs84.inverse(from: origin, to: .init(latitude: offset, longitude: offset))
-            XCTAssertEqual(solution.distance, distance, accuracy: millimetre, "\(offset)°")
-        }
-    }
-
-    func test_inverse_coincident_hasZeroDistanceAndNoBearing() throws {
-        let solution = try wgs84.inverse(from: landsEnd, to: landsEnd)
-
-        XCTAssertEqual(solution.distance, 0)
-        XCTAssertNil(solution.initialBearing)
-        XCTAssertNil(solution.finalBearing)
-    }
-
-    func test_inverse_oneDegreeOfEquator() throws {
-        let distance = try wgs84.inverse(from: .init(latitude: 0, longitude: 0), to: .init(latitude: 0, longitude: 1)).distance
-        XCTAssertEqual(distance, 111_319.491, accuracy: millimetre)
-    }
-
-    func test_direct_zeroDistance_returnsStart() throws {
-        let solution = try wgs84.direct(from: landsEnd, distance: 0, initialBearing: 0)
-
-        XCTAssertEqual(solution.destination, landsEnd)
-        XCTAssertNil(solution.finalBearing)
-    }
-
-    // MARK: - Antimeridian and quadrants
-
-    func test_inverse_crossingAntimeridian() throws {
-        let distance = try wgs84.inverse(from: .init(latitude: 30, longitude: 120), to: .init(latitude: 30, longitude: -120)).distance
-        XCTAssertEqual(distance, 10_825_924.089, accuracy: millimetre)
-    }
-
-    func test_direct_crossingAntimeridian_wrapsLongitude() throws {
-        let start = GeodeticCoordinate(latitude: 30, longitude: 120)
-        let end = GeodeticCoordinate(latitude: 30, longitude: -120)
-        let inverse = try wgs84.inverse(from: start, to: end)
-
-        let direct = try wgs84.direct(from: start, distance: inverse.distance, initialBearing: try XCTUnwrap(inverse.initialBearing))
-
-        assertCoordinate(direct.destination, end, accuracy: 0.000001)
-    }
-
-    func test_inverse_allQuadrants() throws {
-        let pairs: [((Double, Double), (Double, Double))] = [
-            ((30, 30), (60, 60)), ((60, 60), (30, 30)), ((30, 60), (60, 30)), ((60, 30), (30, 60)),
-            ((30, -30), (60, -60)), ((60, -60), (30, -30)), ((30, -60), (60, -30)), ((60, -30), (30, -60)),
-            ((-30, -30), (-60, -60)), ((-60, -60), (-30, -30)), ((-30, -60), (-60, -30)), ((-60, -30), (-30, -60)),
-            ((-30, 30), (-60, 60)), ((-60, 60), (-30, 30)), ((-30, 60), (-60, 30)), ((-60, 30), (-30, 60)),
-        ]
-        for (a, b) in pairs {
-            let distance = try wgs84.inverse(from: .init(latitude: a.0, longitude: a.1), to: .init(latitude: b.0, longitude: b.1)).distance
-            XCTAssertEqual(distance, 4_015_703.021, accuracy: millimetre, "\(a) → \(b)")
-        }
-    }
-
-    // MARK: - Round trips
-
-    func test_directThenInverse_roundTrips() throws {
-        let start = GeodeticCoordinate(latitude: 1, longitude: 1)
-        for (distance, bearing) in [(1.0, 0.0), (1_000.0, 45.0), (25_000.0, 186.0), (5_000_000.0, 300.0)] {
-            let direct = try wgs84.direct(from: start, distance: distance, initialBearing: bearing)
-            let inverse = try wgs84.inverse(from: start, to: direct.destination)
-
-            XCTAssertEqual(inverse.distance, distance, accuracy: millimetre, "\(distance) m at \(bearing)°")
-            XCTAssertEqual(try XCTUnwrap(inverse.initialBearing), bearing, accuracy: bearingPrecision, "\(distance) m at \(bearing)°")
-        }
-    }
-
-    // MARK: - Invalid input
-
-    func test_nonFiniteInput_throws() {
-        let nan = Double.nan
-        XCTAssertThrowsError(try wgs84.direct(from: landsEnd, distance: nan, initialBearing: 0)) {
-            XCTAssertEqual($0 as? VincentyError, .invalidInput)
-        }
-        XCTAssertThrowsError(try wgs84.direct(from: landsEnd, distance: 1, initialBearing: nan)) {
-            XCTAssertEqual($0 as? VincentyError, .invalidInput)
-        }
-        XCTAssertThrowsError(try wgs84.inverse(from: .init(latitude: nan, longitude: 0), to: landsEnd)) {
-            XCTAssertEqual($0 as? VincentyError, .invalidInput)
+            XCTAssertEqual(
+                try XCTUnwrap(solution.initialBearing), testCase.inverseInitialBearing, accuracy: bearingPrecision,
+                "Rainsford \(testCase.name) initial bearing"
+            )
+            XCTAssertEqual(
+                try XCTUnwrap(solution.finalBearing), testCase.inverseFinalBearing, accuracy: bearingPrecision,
+                "Rainsford \(testCase.name) final bearing"
+            )
         }
     }
 }
